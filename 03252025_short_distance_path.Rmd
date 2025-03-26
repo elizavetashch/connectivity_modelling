@@ -1,0 +1,210 @@
+---
+title: "03252025_corine_grainscape"
+author: "Elizaveta Shcherbinina"
+date: "2025-03-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages}
+library(raster)
+library(sf)
+library(grainscape)
+library(ggplot2)
+library(terra)
+library(dplyr)
+library(giscoR)
+library(igraph)
+```
+
+## Coreine plot
+```{r corine data}
+clc2018 <- raster::raster(".\\clc2018_v2020_20u1_raster100m\\DATA\\U2018_CLC2018_V2020_20u1.tif")
+```
+
+```{r corine plot with legend}
+
+rasterlegend <- levels(clc2018)[[1]]
+
+colors <- rgb(rasterlegend$Red, rasterlegend$Green, rasterlegend$Blue)
+
+# Plot the corine map
+par(mar = c(5, 4, 4, 30))  # Increase right margin
+plot(clc2018, col = colors, main = "CLC 2018 Land Cover")
+legend("topright", inset = c(-0.35, 0), legend = rasterlegend$LABEL3, fill = colors, 
+       cex = 0.4, bty = "n", ncol = 5, xpd = TRUE)
+```
+
+```{r theme from grainscape}
+theme_visualRef <- theme_grainscape() +
+  theme(panel.background = element_rect(colour = "black", size = 0.25, fill = NA))
+theme_set(theme_visualRef)
+```
+
+```{r corine germany}
+
+germany_sf <- gisco_get_countries(country = "DE", resolution = "3")
+crs(clc2018) # Check raster CRS
+st_crs(germany_sf) 
+germany_sf <- st_transform(germany_sf, crs(clc2018))
+clc2018_cropped <- crop(clc2018, germany_sf)
+germany_clc2018 <- mask(clc2018_cropped, germany_sf)
+
+plot(germany_clc2018, col = colors)
+```
+```{r raster resistance surface to create the minimum planar graph (MPG). Features with value of 1 (red) will be the patches in the network.'}
+
+patchy <- germany_clc2018
+
+### Create an is-becomes matrix for reclassification
+isBecomes <- cbind(c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 48), c(9, 9, 9, 7, 7, 5, 5, 5, 5, 7, 7, 4, 4, 4, 4, 4, 4, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 1, 4, 4, 4, 4, 9, 5, 5, 5, 5, 5, 10, 10, 10, 10, 10, NA))
+patchyCost <- reclassify(patchy, rcl = isBecomes)
+patchyCost_df <- ggGS(patchyCost)
+patchyCost_df$value <- as.factor(patchyCost_df$value)
+
+# Define 7-step color palette
+my_palette <- c("#008000", "#32CD32", "#ADFF2F", "#FFFF00", "#FFA500", "#FF4500", "#FF0000")
+
+
+## Plot this raster using ggplot2 functionality
+## and the default grainscape theme
+ggplot() +
+  geom_raster(
+    data = patchyCost_df,
+    aes(x = x, y = y, fill = value)
+  ) +
+  guides(fill = guide_legend(title = "Resistance")) +
+  theme_grainscape() +
+  theme(legend.position = "right")
+```
+
+```{r patchyMGP}
+patchyMPG <- MPG(patchyCost, patch = (patchyCost == 1))
+# time needed: 16:42-> 17:00 (18 min)
+```
+
+```{r}
+plot(patchyMPG, quick = "mpgPlot", theme = FALSE)
+```
+
+
+```{r table reporting on the MPG}
+## Extract tabular node information using the graphdf() function
+nodeTable <- graphdf(patchyMPG)[[1]]$v
+
+## Extract tabular link information using the graphdf() function
+linkTable <- graphdf(patchyMPG)[[1]]$e
+```
+
+```{r}
+patchyTh <- threshold(patchyMPG, nThresh = 100)
+# -> resulted to set 20 as a link threshold
+```
+
+
+```{r}
+## Use the grainscape::threshold() function to create a new network
+## by thresholding links
+
+patchyTh <- threshold(patchyMPG, doThresh = 20)
+## Find the components in that thresholded network using
+## an igraph package function
+patchyThC <- components(patchyTh$th[[1]])
+## Extract the node table and append the
+## component membership information
+patchyThNodes <- data.frame(vertex_attr(patchyTh$th[[1]]),
+component = patchyThC$membership
+)
+## We don't want to show nodes that are in components with
+## only one node, so remove them
+singleNodes <- patchyThNodes$component %in% which(patchyThC$csize == 1)
+patchyThNodes <- patchyThNodes[!(singleNodes), ]
+## Rename some columns to improve readability
+patchyThNodes$x <- patchyThNodes$centroidX
+patchyThNodes$y <- patchyThNodes$centroidY
+figure18 <- ggplot() +
+geom_raster(
+data = ggGS(patchyMPG, "patchId"),
+aes(x = x, y = y, fill = value > 0)
+) +
+scale_fill_manual(values = "grey") +
+geom_segment(
+data = ggGS(patchyMPG, "links"),
+aes(
+x = x1, y = y1, xend = x2, yend = y2,
+colour = lcpPerimWeight > 20
+)
+) +
+scale_colour_manual(values = c("forestgreen", NA)) +
+geom_point(
+data = patchyThNodes,
+aes(x = x, y = y), shape = 19, size = 4, colour = "darkgreen"
+) +
+geom_text(
+data = patchyThNodes, aes(x = x, y = y, label = patchId),
+colour = "white", size = 2
+) +
+ggtitle("Link thresholding to show components")
+
+figure18
+
+ggsave("nodes_patchId.png", figure18, width = 70, height = 80, units = c("cm"))
+```
+
+
+
+
+
+```{r shortest distance}
+## Declare the start and end patchIds
+## These were identified by plotting the patchIds (see earlier examples)
+startEnd <- c(50137, 131258)
+## Find the shortest path between these nodes using
+## the shortest path through the resistance surface
+## (i.e. weighted by 'lcpPerimWeight')
+shPath <- shortest_paths(patchyMPG$mpg,
+from = which(V(patchyMPG$mpg)$patchId == startEnd[1]),
+to = which(V(patchyMPG$mpg)$patchId == startEnd[2]),
+output = "both"
+)
+## Extract the nodes and links of this shortest path
+shPathN <- as.integer(names(shPath$vpath[[1]]))
+shPathL <- E(patchyMPG$mpg)[shPath$epath[[1]]]$linkId
+## Produce shortest path tables for plotting
+shPathNodes <- subset(ggGS(patchyMPG, "nodes"), patchId %in% shPathN)
+shPathLinks <- subset(ggGS(patchyMPG, "links"), linkId %in% shPathL)
+## Find the distance of the shortest path
+shPathD <- distances(patchyMPG$mpg,
+v = which(V(patchyMPG$mpg)$patchId == startEnd[1]),
+to = which(V(patchyMPG$mpg)$patchId == startEnd[2])
+)[1]
+## Plot shortest path
+figure20 <- ggplot() +
+geom_raster(
+data = ggGS(patchyMPG, "patchId"),
+aes(x = 	x, y = y,
+fill = ifelse(value %in% shPathN, "grey70", "grey90")
+)
+) +
+scale_fill_identity() +
+geom_segment(
+data = shPathLinks, aes(x = x1, y = y1, xend = x2, yend = y2),
+colour = "forestgreen", size = 1
+) +
+geom_point(data = shPathNodes, aes(x = x, y = y), colour = "darkgreen") +
+ggtitle("Shortest-path distance between nodes") +
+annotate("text", 260, 340,
+label = paste0(shPathD, " resistance units"), size = 2.5
+)+ 
+  xlim(4090036, 4404313) +
+  ylim(2776088, 3181095)
+
+figure20
+
+ggsave("nodes_patchId.png", figure20, width = 70, height = 80, units = c("cm"))
+
+```
+
